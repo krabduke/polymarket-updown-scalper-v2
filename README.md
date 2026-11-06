@@ -24,26 +24,30 @@ The research behind this (platform rules, the V1 audit, alternatives) lives in t
 
 ## What gets tested
 
-Five variants run side by side on every window. They are fixed in advance, so the forward test isn't tuned on its own results:
+Two variants run side by side on every window. Both use the original V1 entry, and they differ only in the exit:
 
 | Variant | Entry | Exit |
 |---|---|---|
-| `old_stop80` | ≤15 s left, ask 90–99¢ | Sell when the bid reaches 80¢ |
-| `old_hold` | same | Hold to settlement |
-| `tuned_stop80` | 3–15 s left, ask 90–97¢ | Sell when the bid reaches 80¢ |
-| `tuned_hold` | same | Hold to settlement |
-| `wide60_hold` | 3–60 s left, ask 90–97¢ | Hold to settlement |
+| `stop80` | ≤15 s left, best ask 90–99¢: buy $50 of the leading side | The moment the best bid is at or below 80¢: market-sell everything. Otherwise hold to settlement |
+| `hold` | same | Hold to settlement |
 
-The tuned versions drop the last 3 seconds, when a fill is least likely to land, and skip asks of 98–99¢, which pay at most 2¢ against a full loss. `wide60_hold` exists because under TWAP settlement about 95% of 5-minute windows are already pinned near 100¢ with 15 seconds left, so the 15-second rule fires in only about 6% of windows. More variants can be backtested from the recorded data without touching the live run.
+How fills are simulated, for both:
 
-**Markets:** BTC, ETH, SOL, XRP, DOGE, BNB, HYPE and ZEC, in 5-minute and 15-minute windows. Polymarket has **no 1-minute Up/Down markets** today. The 1-minute series stays configured, so it starts recording on its own if they launch.
+- **Delay:** every order lands 200 ms after the decision (the 150 ms taker delay plus network).
+- **Buying:** the buy walks the asks standing at that moment, up to 2¢ above the trigger price, and needs at least 5 shares.
+- **Selling:** the stop is a market sell that walks down the bids, best first, at whatever price each level offers. If the bids run out, the rest is sent again after another 200 ms delay.
+- **Our own impact:** bids we've already sold into are gone for us. A retry can't hit them again, even though the public feed still shows them. Shares that still can't be sold before the close ride to settlement.
+
+More variants can be backtested from the recorded data with `replay`, without touching the live run.
+
+**Markets:** BTC, ETH, SOL, XRP, DOGE, BNB, HYPE and ZEC, in 1-minute, 5-minute and 15-minute windows (24 series). Polymarket has **no 1-minute Up/Down markets** today. Those 8 series check every 30 minutes and start recording on their own if they launch.
 
 **Settlement:** since August 2026 these markets settle on a 60-second Chainlink **TWAP**, not a single closing price. Results from V1 don't carry over.
 
 ## Commands
 
 ```bash
-cargo test                       # 39 tests: fees, books, feed parsing, strategy holes, replay parity
+cargo test                       # 44 tests: fees, books, feed parsing, strategy holes, replay parity
 cargo build --release
 
 scalper run    --data data       # forward test (records the last 90 s of every window)

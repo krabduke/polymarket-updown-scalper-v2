@@ -94,13 +94,25 @@ impl Book {
 
     /// Sells up to `shares` into the bids, best first, with no price floor.
     pub fn sell_shares(&self, shares: f64) -> Fill {
+        self.sell_walk(shares, &mut BTreeMap::new())
+    }
+
+    /// A market sell that remembers what it took. `taken` holds the size this
+    /// trader already sold into at each bid price; that size is gone, so a later
+    /// sale can't hit it again even though the public feed still shows it.
+    pub fn sell_walk(&self, shares: f64, taken: &mut BTreeMap<u32, f64>) -> Fill {
         let mut fill = Fill::default();
         let mut left = shares;
         for (p, size) in self.bids.iter().rev() {
             if left <= 1e-9 {
                 break;
             }
-            let take = size.min(left);
+            let used = taken.entry(*p).or_insert(0.0);
+            let take = (size - *used).max(0.0).min(left);
+            if take <= 0.0 {
+                continue;
+            }
+            *used += take;
             fill.shares += take;
             fill.cost += take * f64::from(*p) / SCALE;
             left -= take;

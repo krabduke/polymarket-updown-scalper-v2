@@ -30,8 +30,11 @@ pub struct Variant {
     pub max_slip: f64,
 }
 
-/// The variants fixed in advance for the forward test. All use real asks, real
-/// book depth, a 200ms delay (150ms taker delay + 50ms network) and real settlement.
+/// The two variants fixed in advance for the forward test. Both use the original
+/// V1 entry (<=15s left, best ask 90-99c, buy $50 of the leading side). They differ
+/// only in the exit: `stop80` market-sells everything once the best bid is at or
+/// below 80c, otherwise holds; `hold` always holds to settlement. Fills walk the
+/// real book after a 200ms delay (150ms taker delay plus 50ms network).
 pub fn default_variants() -> Vec<Variant> {
     let base = Variant {
         name: String::new(),
@@ -44,15 +47,7 @@ pub fn default_variants() -> Vec<Variant> {
         latency_ms: 200,
         max_slip: 0.02,
     };
-    vec![
-        Variant { name: "old_stop80".into(), ..base.clone() },
-        Variant { name: "old_hold".into(), stop: None, ..base.clone() },
-        Variant { name: "tuned_stop80".into(), min_secs: 3.0, max_ask: 0.97, ..base.clone() },
-        Variant { name: "tuned_hold".into(), min_secs: 3.0, max_ask: 0.97, stop: None, ..base.clone() },
-        // Under TWAP most 5m windows are pinned near 100c by 15s left, so the
-        // 15s rule fires rarely. This one widens the window to get a usable sample.
-        Variant { name: "wide60_hold".into(), entry_secs: 60.0, min_secs: 3.0, max_ask: 0.97, stop: None, ..base },
-    ]
+    vec![Variant { name: "stop80".into(), ..base.clone() }, Variant { name: "hold".into(), stop: None, ..base }]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +114,8 @@ struct Sim {
     trigger_ask: f64,
     entry: Fill,
     exit: Fill,
+    /// Bid size this trader already sold into, per price.
+    taken: std::collections::BTreeMap<u32, f64>,
     stopped: bool,
     tainted: bool,
 }
@@ -133,6 +130,7 @@ impl Sim {
             trigger_ask: 0.0,
             entry: Fill::default(),
             exit: Fill::default(),
+            taken: std::collections::BTreeMap::new(),
             stopped: false,
             tainted: false,
         }
@@ -183,6 +181,9 @@ impl Sim {
             }
             State::Holding => {
                 let Some(stop) = self.v.stop else { return };
+                if self.stopped {
+                    return; // already sold out
+                }
                 if open && book(self.token).best_bid().is_none_or(|b| b <= stop + 1e-9) {
                     self.stopped = true;
                     self.state = State::PendingExit { fill_at: now + self.v.latency_ms };
@@ -193,10 +194,16 @@ impl Sim {
                     return;
                 }
                 let left = self.entry.shares - self.exit.shares;
-                let fill = book(self.token).sell_shares(left);
+                let fill = book(self.token).sell_walk(left, &mut self.taken);
                 self.exit.shares += fill.shares;
                 self.exit.cost += fill.cost;
                 self.exit.fee += taker_fee(fill.shares, fill.avg(), meta.fee_rate);
+                if self.entry.shares - self.exit.shares > 1e-9 {
+                    // Not enough bids: send another market sell, which takes the same delay.
+                    self.state = State::PendingExit { fill_at: now + self.v.latency_ms };
+                } else {
+                    self.state = State::Holding; // nothing left to sell
+                }
             }
             State::Failed(_) => {}
         }

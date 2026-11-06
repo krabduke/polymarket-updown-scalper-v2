@@ -250,3 +250,86 @@ fn order_due_before_the_close_fills_against_the_closing_book() {
     assert_eq!(t.status, SimStatus::Filled);
     assert!((t.entry_avg - 0.91).abs() < 1e-9);
 }
+
+#[test]
+fn v2_runs_exactly_the_original_entry_with_two_exits() {
+    let vs = scalper::engine::default_variants();
+    let names: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, ["stop80", "hold"]);
+    for v in &vs {
+        assert_eq!((v.entry_secs, v.min_secs, v.min_ask, v.max_ask), (15.0, 0.0, 0.90, 0.99));
+        assert_eq!(v.latency_ms, 200);
+    }
+    assert_eq!(vs[0].stop, Some(0.80));
+    assert_eq!(vs[1].stop, None);
+}
+
+/// Up book with explicit bid levels and one ask.
+fn up_bids(bids: &[(f64, f64)], ask: f64) -> String {
+    let b: Vec<String> = bids.iter().map(|(p, s)| format!(r#"{{"price":"{p}","size":"{s}"}}"#)).collect();
+    format!(
+        r#"{{"event_type":"book","asset_id":"UP","bids":[{}],"asks":[{{"price":"{ask}","size":"1000"}}]}}"#,
+        b.join(",")
+    )
+}
+
+#[test]
+fn market_sell_walks_every_bid_level_it_needs() {
+    // About 54.9 shares to sell: 20 at 0.80, 20 at 0.75, the rest at 0.70.
+    let book = up_bids(&[(0.80, 20.0), (0.75, 20.0), (0.70, 500.0)], 0.82);
+    let mut e = engine(stop80());
+    send(&mut e, 10.0, &up(0.90, 0.91));
+    send(&mut e, 9.7, &up(0.90, 0.91));
+    send(&mut e, 5.0, &book);
+    send(&mut e, 4.7, &book);
+    let t = e.finish(Some(Winner::Up)).trades.remove(0);
+    let rest = t.shares - 40.0;
+    let expect = (20.0 * 0.80 + 20.0 * 0.75 + rest * 0.70) / t.shares;
+    assert!((t.exit_shares - t.shares).abs() < 1e-9);
+    assert!((t.exit_avg - expect).abs() < 1e-9, "{} vs {expect}", t.exit_avg);
+}
+
+#[test]
+fn our_own_sale_removes_the_bids_it_hit() {
+    // Only 30 shares of bids exist. The retry must not sell into those same
+    // 30 shares again just because the feed still shows them.
+    let thin = up_bids(&[(0.80, 30.0)], 0.82);
+    let mut e = engine(stop80());
+    send(&mut e, 10.0, &up(0.90, 0.91));
+    send(&mut e, 9.7, &up(0.90, 0.91));
+    send(&mut e, 5.0, &thin);
+    for s in [4.7, 4.4, 4.1, 3.8, 3.5] {
+        send(&mut e, s, &thin);
+    }
+    let t = e.finish(Some(Winner::Down)).trades.remove(0);
+    assert!((t.exit_shares - 30.0).abs() < 1e-9, "sold {}", t.exit_shares);
+}
+
+#[test]
+fn remainder_sells_into_new_bids_after_another_delay() {
+    let thin = up_bids(&[(0.80, 30.0)], 0.82);
+    let refilled = up_bids(&[(0.80, 30.0), (0.60, 500.0)], 0.82);
+    let mut e = engine(stop80());
+    send(&mut e, 10.0, &up(0.90, 0.91));
+    send(&mut e, 9.7, &up(0.90, 0.91));
+    send(&mut e, 5.0, &thin);
+    send(&mut e, 4.7, &thin); // first sale: 30 at 0.80
+    send(&mut e, 4.6, &refilled); // new 0.60 bids, but the retry is still in flight
+    send(&mut e, 4.4, &refilled); // retry lands: the rest at 0.60
+    let t = e.finish(Some(Winner::Down)).trades.remove(0);
+    let expect = (30.0 * 0.80 + (t.shares - 30.0) * 0.60) / t.shares;
+    assert!((t.exit_shares - t.shares).abs() < 1e-9);
+    assert!((t.exit_avg - expect).abs() < 1e-9, "{} vs {expect}", t.exit_avg);
+}
+
+#[test]
+fn bid_above_80_never_triggers_the_stop() {
+    let mut e = engine(stop80());
+    send(&mut e, 10.0, &up(0.90, 0.91));
+    send(&mut e, 9.7, &up(0.90, 0.91));
+    send(&mut e, 5.0, &up(0.81, 0.83));
+    send(&mut e, 2.0, &up(0.81, 0.83));
+    let t = e.finish(Some(Winner::Up)).trades.remove(0);
+    assert!(!t.stopped);
+    assert!(t.pnl_usd > 0.0);
+}
