@@ -13,6 +13,10 @@ use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::PathBuf;
 
+// musl's default allocator kept growing under this workload; see Memory in ANALYSIS.md.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const USAGE: &str = "usage:
   scalper run    [--data DIR] [--assets btc,eth,..] [--durations 60,300,900] [--watch-secs 90] [--raw-cap-gb 6] [--variants FILE]
   scalper replay [--data DIR] [--variants FILE] [--out FILE]

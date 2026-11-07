@@ -8,6 +8,7 @@ description = "Paper-only forward tester and replay backtester for Polymarket cr
 anyhow = "1"
 fs2 = "0.4"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+mimalloc = { version = "0.1.52", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

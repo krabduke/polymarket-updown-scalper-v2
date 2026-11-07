@@ -11,5 +11,9 @@ flock -n 9 || exit 0
 if pgrep -u "$ME" -x scalper >/dev/null; then exit 0; fi
 echo "$(date -u +%FT%TZ) starting scalper" >> "$DIR/logs/watchdog.log"
 cd "$DIR"
+# Safety limits for a shared server: a hard memory ceiling (2.5 GB of address space; mimalloc
+# reserves about 1 GB of that up front), and first in line if the kernel ever runs out of memory.
+ulimit -v 2500000
+echo 1000 > /proc/self/oom_score_adj || true
 nohup nice -n 10 ionice -c 3 "$DIR/scalper" run --data "$DIR/data" --raw-cap-gb 6 \
   >> "$DIR/logs/scalper.log" 2>&1 < /dev/null &
